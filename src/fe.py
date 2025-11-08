@@ -13,26 +13,26 @@ FEATURE_DIR.mkdir(parents=True, exist_ok=True)
 def build_team_week_features(games_df: pd.DataFrame, season: int, rolling_window: int = 3) -> pd.DataFrame:
     """
     Compute team-week features (points, margins, win rates, rolling averages)
-    Args:
-        games_df: DataFrame of all games in a season (from CFBD)
-        season: int
-        rolling_window: number of weeks for rolling averages
-    Returns:
-        DataFrame indexed by (team, week)
+    Adapted for CFBD v2 schema with camelCase columns.
     """
-
-    # Normalize key columns based on CFBD structure
+    # Rename to consistent snake_case for easier handling
     games_df = games_df.rename(
         columns={
-            "home_team": "home",
-            "away_team": "away",
-            "home_points": "home_pts",
-            "away_points": "away_pts",
+            "homeTeam": "home",
+            "awayTeam": "away",
+            "homePoints": "home_pts",
+            "awayPoints": "away_pts",
+            "neutralSite": "neutral",
             "week": "week",
+            "seasonType": "season_type",
         }
     )
 
-    # Build team-level rows (home + away flattened)
+    # Filter only completed games with valid scores
+    games_df = games_df[games_df["completed"] == True]
+    games_df = games_df.dropna(subset=["home_pts", "away_pts"])
+
+    # Flatten home/away perspectives
     home_rows = games_df[["home", "away", "home_pts", "away_pts", "week"]].copy()
     home_rows["team"] = home_rows["home"]
     home_rows["opp"] = home_rows["away"]
@@ -49,11 +49,12 @@ def build_team_week_features(games_df: pd.DataFrame, season: int, rolling_window
     away_rows["is_home"] = 0
     away_rows["win"] = (away_rows["away_pts"] > away_rows["home_pts"]).astype(int)
 
+    # Combine home + away views
     team_games = pd.concat([home_rows, away_rows], ignore_index=True)
     team_games = team_games[["team", "opp", "week", "points_for", "points_against", "is_home", "win"]]
     team_games["point_diff"] = team_games["points_for"] - team_games["points_against"]
 
-    # Aggregate by week per team
+    # Aggregate by team/week
     team_week = (
         team_games.groupby(["team", "week"])
         .agg(
@@ -67,17 +68,15 @@ def build_team_week_features(games_df: pd.DataFrame, season: int, rolling_window
         .reset_index()
     )
 
-    # Cumulative and rolling metrics
+    # Cumulative + rolling features
     team_week = team_week.sort_values(["team", "week"])
     team_week["cum_games"] = team_week.groupby("team")["games_played"].cumsum()
     team_week["cum_wins"] = team_week.groupby("team")["total_wins"].cumsum()
     team_week["cum_points_for"] = team_week.groupby("team")["total_points_for"].cumsum()
     team_week["cum_points_against"] = team_week.groupby("team")["total_points_against"].cumsum()
 
-    # Win rate
     team_week["win_rate"] = team_week["cum_wins"] / team_week["cum_games"]
 
-    # Rolling averages
     for col in ["avg_point_diff", "total_points_for", "total_points_against"]:
         team_week[f"{col}_roll{rolling_window}"] = (
             team_week.groupby("team")[col]
